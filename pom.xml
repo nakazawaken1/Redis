@@ -2,7 +2,7 @@
   <modelVersion>4.0.0</modelVersion>
   <groupId>jp.qpg</groupId>
   <artifactId>Redis</artifactId>
-  <version>1.0.0</version>
+  <version>1.1.0</version>
   <name>Simple Redis client</name>
   <properties>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>

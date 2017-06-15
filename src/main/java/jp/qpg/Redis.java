@@ -9,7 +9,6 @@ import java.io.PrintStream;
 import java.io.UncheckedIOException;
 import java.net.Socket;
 import java.nio.charset.StandardCharsets;
-import java.util.AbstractMap;
 import java.util.Map;
 import java.util.logging.Logger;
 import java.util.stream.Collectors;
@@ -20,6 +19,98 @@ import java.util.stream.Stream;
  * Redis client
  */
 public class Redis implements AutoCloseable {
+    /**
+     * Data type
+     */
+    public enum Type {
+        /**
+         * Single line string
+         */
+        STRING('+'),
+        /**
+         * Single line error string
+         */
+        ERROR('-'),
+        /**
+         * Number
+         */
+        NUMBER(':'),
+        /**
+         * Bulk(binary safe string)
+         */
+        BULK('$'),
+        /**
+         * Multi bulk(array)
+         */
+        MULTI('*');
+
+        /**
+         * map(mark: Type)
+         */
+        public static final Map<Character, Type> map = Stream.of(values()).collect(Collectors.toMap(t -> t.mark, t -> t));
+
+        /**
+         * Character code
+         */
+        public final char mark;
+
+        /**
+         * @param mark Character code
+         */
+        Type(char mark) {
+            this.mark = mark;
+        }
+    }
+
+    /**
+     * Reply data
+     *
+     * @param <T> Data type
+     */
+    public static class Reply<T> {
+        /**
+         * Data type
+         */
+        public final Type type;
+        /**
+         * Value
+         */
+        public final T value;
+
+        /**
+         * @param type Data type
+         * @param value Value
+         */
+        public Reply(Type type, T value) {
+            this.type = type;
+            this.value = value;
+        }
+
+        /*
+         * (non-Javadoc)
+         * 
+         * @see java.lang.Object#toString()
+         */
+        @Override
+        public String toString() {
+            if (type == Type.MULTI) {
+                int i = 1;
+                Reply<?>[] list = (Reply<?>[]) value;
+                StringBuilder s = new StringBuilder();
+                s.append(list.length).append(" items");
+                for (Reply<?> reply : list) {
+                    s.append(System.lineSeparator()).append('[').append(i).append("] ").append(reply);
+                    i++;
+                }
+                return s.toString();
+            }
+            if (type == Type.BULK) {
+                return (char) type.mark + new String((byte[]) value, StandardCharsets.UTF_8);
+            }
+            return (char) type.mark + String.valueOf(value);
+        }
+    }
+
     /**
      * Socket
      */
@@ -127,10 +218,27 @@ public class Redis implements AutoCloseable {
     /**
      * Write command
      * 
+     * @param <T> Value type
+     * 
+     * @param texts Text
+     * @return Reply
+     */
+    public <T> Reply<T> command(String... texts) {
+        try {
+            send(texts);
+            return response();
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
+    }
+
+    /**
+     * Write command
+     * 
      * @param texts Text
      * @throws IOException I/O error
      */
-    public void command(String... texts) throws IOException {
+    public void send(String... texts) throws IOException {
         logger.config("[Redis] " + String.join(" ", texts));
         writeln(("*" + texts.length).getBytes(StandardCharsets.UTF_8));
         for (String text : texts) {
@@ -145,7 +253,7 @@ public class Redis implements AutoCloseable {
      * @param texts Text
      * @throws IOException I/O error
      */
-    public void command(Object... texts) throws IOException {
+    public void send(Object... texts) throws IOException {
         logger.config("[Redis] " + Stream.of(texts).map(i -> i instanceof byte[] ? "(bytes)" : i.toString()).collect(Collectors.joining(" ")));
         writeln(("*" + texts.length).getBytes(StandardCharsets.UTF_8));
         for (Object text : texts) {
@@ -309,44 +417,33 @@ public class Redis implements AutoCloseable {
     /**
      * Read object(include read prefix)
      * 
+     * @param <T> Value type(STRING, ERROR: String, NUMBER: Long, BULK: byte[], MULTI: Reply[])
+     * 
      * @return Object
      * @throws IOException I/O error
      */
-    public Map.Entry<Character, Object> response() throws IOException {
+    @SuppressWarnings("unchecked")
+    public <T> Reply<T> response() throws IOException {
         char c = (char) read();
         switch (c) {
         case '+':
         case '-':
-            return new AbstractMap.SimpleImmutableEntry<>(c, readString());
+            return (Reply<T>) new Reply<>(Type.map.get(c), readString());
         case ':':
-            return new AbstractMap.SimpleImmutableEntry<>(c, readLong());
+            return (Reply<T>) new Reply<>(Type.map.get(c), readLong());
         case '$':
-            return new AbstractMap.SimpleImmutableEntry<>(c, readBytes((int) readLong()));
+            return (Reply<T>) new Reply<>(Type.map.get(c), readBytes((int) readLong()));
         case '*':
-            return new AbstractMap.SimpleImmutableEntry<>(c, IntStream.range(0, (int) readLong()).mapToObj(i -> {
+            return (Reply<T>) new Reply<>(Type.map.get(c), IntStream.range(0, (int) readLong()).mapToObj(i -> {
                 try {
                     return response();
                 } catch (IOException e) {
                     throw new UncheckedIOException(e);
                 }
-            }).toArray());
+            }).toArray(Reply[]::new));
         default:
             throw new IOException("Invalid data");
         }
-    }
-
-    /**
-     * Read object as Text(include read prefix)
-     * 
-     * @return Text
-     * @throws IOException I/O error
-     */
-    public String responseText() throws IOException {
-        Map.Entry<Character, Object> pair = response();
-        if (pair.getKey() == '$') {
-            return pair.getKey() + new String((byte[]) pair.getValue(), StandardCharsets.UTF_8);
-        }
-        return pair.getKey() + String.valueOf(pair.getValue());
     }
 
     /**
@@ -358,46 +455,63 @@ public class Redis implements AutoCloseable {
     public static void main(String[] args) throws Exception {
         PrintStream out = System.out;
         try (Redis redis = new Redis()) {
-            Runnable keys = () -> {
-                try {
-                    String[] command = { "KEYS", "*" };
-                    out.println("< " + String.join(" ", command));
-                    redis.command(command);
-                    long n = redis.readLong('*');
-                    out.println("> :" + n);
-                    for (int i = 1; i <= n; i++) {
-                        out.println("> " + i + ") " + redis.responseText());
-                    }
-                } catch (IOException e) {
-                    throw new UncheckedIOException(e);
-                }
-            };
+            String[] keys = { "KEYS", "*" };
+
             // Enumerate keys
-            keys.run();
+            out.println("< " + String.join(" ", keys));
+            out.println("> " + redis.command(keys));
+            out.println();
 
             // set value
             String[] set = { "SET", "a", "テスト" };
             out.println("< " + String.join(" ", set));
-            redis.command(set);
-            out.println("> " + redis.responseText());
+            out.println("> " + redis.command(set));
+            out.println();
+
+            // set value
+            String[] set2 = { "SET", "b", "あいう\nえお" };
+            out.println("< " + String.join(" ", set2));
+            out.println("> " + redis.command(set2));
+            out.println();
 
             // get value
             String[] get = { "GET", "a" };
             out.println("< " + String.join(" ", get));
-            redis.command(get);
-            out.println("> " + redis.responseText());
+            out.println("> " + redis.command(get));
+            out.println();
+
+            // get value
+            String[] get2 = { "GET", "b" };
+            out.println("< " + String.join(" ", get2));
+            out.println("> " + redis.command(get2));
+            out.println();
 
             // Enumerate keys
-            keys.run();
+            out.println("< " + String.join(" ", keys));
+            out.println("> " + redis.command(keys));
+            out.println();
 
             // delete value
             String[] del = { "DEL", "a" };
             out.println("< " + String.join(" ", del));
-            redis.command(del);
-            out.println("> " + redis.responseText());
+            out.println("> " + redis.command(del));
+            out.println();
 
             // Enumerate keys
-            keys.run();
+            out.println("< " + String.join(" ", keys));
+            out.println("> " + redis.command(keys));
+            out.println();
+
+            // delete value
+            String[] del2 = { "DEL", "b" };
+            out.println("< " + String.join(" ", del2));
+            out.println("> " + redis.command(del2));
+            out.println();
+
+            // Enumerate keys
+            out.println("< " + String.join(" ", keys));
+            out.println("> " + redis.command(keys));
+            out.println();
         }
     }
 }
