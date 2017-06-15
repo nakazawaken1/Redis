@@ -105,9 +105,9 @@ public class Redis implements AutoCloseable {
                 return s.toString();
             }
             if (type == Type.BULK) {
-                return (char) type.mark + new String((byte[]) value, StandardCharsets.UTF_8);
+                return new String((byte[]) value, StandardCharsets.UTF_8);
             }
-            return (char) type.mark + String.valueOf(value);
+            return String.valueOf(value);
         }
     }
 
@@ -420,29 +420,27 @@ public class Redis implements AutoCloseable {
      * @param <T> Value type(STRING, ERROR: String, NUMBER: Long, BULK: byte[], MULTI: Reply[])
      * 
      * @return Object
-     * @throws IOException I/O error
      */
     @SuppressWarnings("unchecked")
-    public <T> Reply<T> response() throws IOException {
-        char c = (char) read();
-        switch (c) {
-        case '+':
-        case '-':
-            return (Reply<T>) new Reply<>(Type.map.get(c), readString());
-        case ':':
-            return (Reply<T>) new Reply<>(Type.map.get(c), readLong());
-        case '$':
-            return (Reply<T>) new Reply<>(Type.map.get(c), readBytes((int) readLong()));
-        case '*':
-            return (Reply<T>) new Reply<>(Type.map.get(c), IntStream.range(0, (int) readLong()).mapToObj(i -> {
-                try {
-                    return response();
-                } catch (IOException e) {
-                    throw new UncheckedIOException(e);
+    public <T> Reply<T> response() {
+        try {
+            Type type = Type.map.get((char) read());
+            if (type != null) {
+                switch (type) {
+                case STRING:
+                case ERROR:
+                    return (Reply<T>) new Reply<>(type, readString());
+                case NUMBER:
+                    return (Reply<T>) new Reply<>(type, readLong());
+                case BULK:
+                    return (Reply<T>) new Reply<>(type, readBytes((int) readLong()));
+                case MULTI:
+                    return (Reply<T>) new Reply<>(type, IntStream.range(0, (int) readLong()).mapToObj(__ -> response()).toArray(Reply[]::new));
                 }
-            }).toArray(Reply[]::new));
-        default:
+            }
             throw new IOException("Invalid data");
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
         }
     }
 

@@ -95,33 +95,33 @@ version 1.0.0 First release
 	> 0 items
 	
 	< SET a テスト
-	> +OK
+	> OK
 	
 	< SET b あいう
 	えお
-	> +OK
+	> OK
 	
 	< GET a
-	> $テスト
+	> テスト
 	
 	< GET b
-	> $あいう
+	> あいう
 	えお
 	
 	< KEYS *
 	> 2 items
-	[1] $a
-	[2] $b
+	[1] a
+	[2] b
 	
 	< DEL a
-	> :1
+	> 1
 	
 	< KEYS *
 	> 1 items
-	[1] $b
+	[1] b
 	
 	< DEL b
-	> :1
+	> 1
 	
 	< KEYS *
 	> 0 items
